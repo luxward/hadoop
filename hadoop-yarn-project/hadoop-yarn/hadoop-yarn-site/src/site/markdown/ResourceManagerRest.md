@@ -311,6 +311,7 @@ The capacity scheduler supports hierarchical queues. This one request will print
 | maxCapacity | float | Configured maximum queue capacity in percentage relative to its parent queue |
 | queueName | string | Name of the queue |
 | queues | array of queues(JSON)/zero or more queue objects(XML) | A collection of queue resources |
+| health | A single health object | The health metrics of capacity scheduler. This metrics existed since 2.8.0, but the output was not well formatted. Hence users can not make use of this field cleanly, this is optimized from 3.2.0 onwards. |
 
 ### Elements of the queues object for a Parent queue
 
@@ -360,6 +361,31 @@ The capacity scheduler supports hierarchical queues. This one request will print
 |:---- |:---- |:---- |
 | memory | int | The amount of memory used (in MB) |
 | vCores | int | The number of virtual cores |
+
+### Elements of the health object in schedulerInfo:
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| lastrun | long | The time in which application started (in ms since epoch) |
+| operationsInfo | array of operations(JSON)/operation objects(XML) | A collection of operation objects |
+| lastRunDetails | array of lastRunDetails(JSON)/lastRunDetail objects(XML) | A collection of lastRunDetail objects |
+
+### Elements of the operation object in health:
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| operation | string | The type of operation |
+| nodeId | string | The id of the node to which the operation relates |
+| containerId | string | The id of the container to which the operation relates |
+| queue | string | The name of the queue to which the operation relates |
+
+### Elements of the lastRunDetail object in health:
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| operation | string | The type of operation  |
+| count | long | The id of the node to which the operation relates |
+| resources | A single resource object | The resources to which the operation relates |
 
 #### Response Examples
 
@@ -632,6 +658,61 @@ Response Body:
                     }
                 ]
             },
+            "health": {
+                "lastrun": 1326381444693,
+                "operationsInfo": [
+                    {
+                        "operation": "last-allocation",
+                        "nodeId": "N/A",
+                        "containerId": "N/A",
+                        "queue": "N/A"
+                    },
+                    {
+                        "operation": "last-release",
+                        "nodeId": "host.domain.com:8041",
+                        "containerId": "container_1326821518301_0005_01_000001",
+                        "queue": "root.default"
+                    },
+                    {
+                        "operation": "last-preemption",
+                        "nodeId": "N/A",
+                        "containerId": "N/A",
+                        "queue": "N/A"
+                    },
+                    {
+                        "operation": "last-reservation",
+                        "nodeId": "N/A",
+                        "containerId": "N/A",
+                        "queue": "N/A"
+                    }
+                ],
+                "lastRunDetails": [
+                    {
+                        "operation": "releases",
+                        "count": 0,
+                        "resources": {
+                            "memory": 0,
+                            "vCores": 0
+                        }
+                    },
+                    {
+                        "operation": "allocations",
+                        "count": 0,
+                        "resources": {
+                            "memory": 0,
+                            "vCores": 0
+                        }
+                    },
+                    {
+                        "operation": "reservations",
+                        "count": 0,
+                        "resources": {
+                            "memory": 0,
+                            "vCores": 0
+                        }
+                    }
+                ]
+            },
             "type": "capacityScheduler",
             "usedCapacity": 0.0
         }
@@ -894,6 +975,57 @@ Response Body:
         </resourcesUsed>
       </queue>
     </queues>
+    <health>
+      <lastrun>1326381444693</lastrun>
+      <operationsInfo>
+        <operation>last-allocation</operation>
+        <nodeId>N/A</nodeId>
+        <containerId>N/A</containerId>
+        <queue>N/A</queue>
+      </operationsInfo>
+      <operationsInfo>
+        <operation>last-release</operation>
+        <nodeId>host.domain.com:8041</nodeId>
+        <containerId>container_1326821518301_0005_01_000001</containerId>
+        <queue>root.default</queue>
+      </operationsInfo>
+      <operationsInfo>
+        <operation>last-preemption</operation>
+        <nodeId>N/A</nodeId>
+        <containerId>N/A</containerId>
+        <queue>N/A</queue>
+      </operationsInfo>
+      <operationsInfo>
+        <operation>last-reservation</operation>
+        <nodeId>N/A</nodeId>
+        <containerId>N/A</containerId>
+        <queue>N/A</queue>
+      </operationsInfo>
+      <lastRunDetails>
+        <operation>releases</operation>
+        <count>0</count>
+        <resources>
+          <memory>0</memory>
+          <vCores>0</vCores>
+        </resources>
+      </lastRunDetails>
+      <lastRunDetails>
+        <operation>allocations</operation>
+        <count>0</count>
+        <resources>
+          <memory>0</memory>
+          <vCores>0</vCores>
+        </resources>
+      </lastRunDetails>
+      <lastRunDetails>
+        <operation>reservations</operation>
+        <count>0</count>
+        <resources>
+          <memory>0</memory>
+          <vCores>0</vCores>
+        </resources>
+      </lastRunDetails>
+    </health>
   </schedulerInfo>
 </scheduler>
 ```
@@ -1316,13 +1448,13 @@ With the Applications API, you can obtain a collection of resources, each of whi
 
 ### Query Parameters Supported
 
-Multiple parameters can be specified for GET operations. The started and finished times have a begin and end parameter to allow you to specify ranges. For example, one could request all applications that started between 1:00am and 2:00pm on 12/19/2011 with startedTimeBegin=1324256400&startedTimeEnd=1324303200. If the Begin parameter is not specified, it defaults to 0, and if the End parameter is not specified, it defaults to infinity.
+Multiple parameters can be specified for GET operations. The started and finished times have a begin and end parameter to allow you to specify ranges. For example, one could request all applications that started between 1:00am and 2:00pm on 12/19/2011 with startedTimeBegin=1324256400&startedTimeEnd=1324303200. If the Begin parameter is not specified, it defaults to 0, and if the End parameter is not specified, it defaults to infinity. All query parameters for this api will filter on all applications. However the `queue` query parameter will only implicitly filter on unfinished applications that are currently in the given queue.
 
       * state [deprecated] - state of the application
       * states - applications matching the given application states, specified as a comma-separated list.
       * finalStatus - the final status of the application - reported by the application itself
       * user - user name
-      * queue - queue name
+      * queue - unfinished applications that are currently in this queue
       * limit - total number of app objects to be returned
       * startedTimeBegin - applications with start time beginning with this time, specified in ms since epoch
       * startedTimeEnd - applications with start time ending with this time, specified in ms since epoch
@@ -2107,8 +2239,7 @@ With the Nodes API, you can obtain a collection of resources, each of which repr
 
 ### Query Parameters Supported
 
-      * state - the state of the node
-      * healthy - true or false
+      * states - the states of the node, specified as a comma-separated list, valid values are: NEW, RUNNING, UNHEALTHY, DECOMMISSIONING, DECOMMISSIONED, LOST, REBOOTED, SHUTDOWN
 
 ### Elements of the *nodes* object
 
@@ -2286,7 +2417,7 @@ Use the following URI to obtain a Node Object, from a node identified by the nod
 | Item | Data Type | Description |
 |:---- |:---- |:---- |
 | rack | string | The rack location of this node |
-| state | string | State of the node - valid values are: NEW, RUNNING, UNHEALTHY, DECOMMISSIONING, DECOMMISSIONED, LOST, REBOOTED |
+| state | string | State of the node - valid values are: NEW, RUNNING, UNHEALTHY, DECOMMISSIONING, DECOMMISSIONED, LOST, REBOOTED, SHUTDOWN |
 | id | string | The node id |
 | nodeHostName | string | The host name of the node |
 | nodeHTTPAddress | string | The nodes HTTP address |
@@ -3519,6 +3650,7 @@ The Cluster Reservation API can be used to list reservations. When listing reser
 | reservation-name | string | A mnemonic name of the reservation (not a valid identifier). |
 | reservation-requests | object | A list of "stages" or phases of this reservation, each describing resource requirements and duration |
 | priority | int | An integer representing the priority of the reservation. A lower number for priority indicates a higher priority reservation. Recurring reservations are always higher priority than non-recurring reservations. Priority for non-recurring reservations are only compared with non-recurring reservations. Likewise with recurring reservations. |
+| recurrence-expression | string | A recurrence expression which represents the time period of a periodic job. Currently, only long values are supported. Later, support for regular expressions denoting arbitrary recurrence patterns (e.g., every Tuesday and Thursday) will be added. Recurrence is represented in milliseconds for periodic jobs. Recurrence is 0 for non-periodic jobs. Periodic jobs are valid until they are explicitly   cancelled and have higher priority than non-periodic jobs (during initial placement and re-planning). Periodic job allocations are consistent across runs (flexibility in allocation is leveraged only during initial placement, allocations remain consistent thereafter). Note that the recurrence expression must be greater than the duration of the reservation (deadline - arrival). Also note that the configured max period must be divisible by the recurrence expression. |
 
 ### Elements of the *reservation-requests* object
 
@@ -4366,7 +4498,7 @@ HTTP Request:
 
 ```json
       Accept: application/json
-      GET http://rm-http-address:port/ws/v1/cluster/apps/{appid}/timeout
+      PUT http://rm-http-address:port/ws/v1/cluster/apps/{appid}/timeout
       Content-Type: application/json
         {
         "timeout":
@@ -4404,7 +4536,7 @@ HTTP Request:
 
 ```xml
       Accept: application/xml
-      GET http://rm-http-address:port/ws/v1/cluster/apps/{appid}/timeout
+      PUT http://rm-http-address:port/ws/v1/cluster/apps/{appid}/timeout
       Content-Type: application/xml
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <timeout>
@@ -4430,3 +4562,191 @@ Response Body:
     <remainingTimeInSeconds>90</remainingTimeInSeconds>
 </timeout>
 ```
+
+Scheduler Configuration Mutation API
+--------------------------------
+
+The scheduler configuration mutation API provides a way to modify scheduler/queue configuration and queue hierarchy.
+
+Please note that this feature is currently in the alpha stage and is subject to change.
+
+
+### URI
+
+      * http://rm-http-address:port/ws/v1/cluster/scheduler-conf
+
+### HTTP Operations Supported
+
+      * PUT
+
+### Elements of the *sched-conf* object
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| update-queue | object | A queue whose configurations should be updated |
+| add-queue | object | A queue to add to the scheduler along with this queue's configurations |
+| remove-queue | string | Full path name of a queue to remove |
+| global-updates | map | Map of key value pairs to update scheduler's global configuration |
+
+### PUT Request Examples
+
+Put requests are used to modify the scheduler configuration. A successful mutation results in a 200 response. A malformed request or one which resulted in an invalid scheduler configuration results in a 400 response.
+
+**Updating queue configuration(s)**
+
+Request for updating queue configurations.
+
+*Elements of the* update-queue *object*
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| queue-name | string | Full path name of the queue to update |
+| params | map | A map of key value configuration pairs to update for this queue |
+
+Assuming we are using the capacity scheduler and the current queue configuration is a single queue *root.default*, this example sets *root.default*'s maximum applications to 100 and its minimum user limit percent to 10.
+
+HTTP Request:
+
+```xml
+      Accept: application/xml
+      PUT http://rm-http-address:port/ws/v1/cluster/scheduler-conf
+      Content-Type: application/xml
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <sched-conf>
+        <update-queue>
+          <queue-name>root.default</queue-name>
+          <params>
+            <entry>
+              <key>maximum-applications</key>
+              <value>100</value>
+            </entry>
+            <entry>
+              <key>minimum-user-limit-percent</key>
+              <value>10</value>
+            </entry>
+          </params>
+        </update-queue>
+      </sched-conf>
+```
+
+
+Response Header:
+
+      HTTP/1.1 200 OK
+      Content-Type: application/xml
+      Transfer-Encoding: chunked
+
+
+**Adding a queue**
+
+Request for adding queues/updating queue configurations.
+
+*Elements of the* add-queue *object*
+
+| Item | Data Type | Description |
+|:---- |:---- |:---- |
+| queue-name | string | Full path name of the queue to add |
+| params | map | A map of key value configuration pairs to set for this queue |
+
+Assuming we are using the capacity scheduler and the current queue configuration is a single queue *root.default*, this example adds a queue *root.a* with capacity/maximum-capacity 10, and adjusts *root.default*'s capacity/maximum-capacity to 90. (More complex examples include adding a queue whose parent is also being added in the same request, or adding multiple sibling queues.)
+
+HTTP Request:
+
+```xml
+      Accept: application/xml
+      PUT http://rm-http-address:port/ws/v1/cluster/scheduler-conf
+      Content-Type: application/xml
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <sched-conf>
+        <add-queue>
+          <queue-name>root.a</queue-name>
+          <params>
+            <entry>
+              <key>capacity</key>
+              <value>10</value>
+            </entry>
+            <entry>
+              <key>maximum-capacity</key>
+              <value>10</value>
+            </entry>
+          </params>
+        </add-queue>
+        <update-queue>
+          <queue-name>root.default</queue-name>
+          <params>
+            <entry>
+              <key>capacity</key>
+              <value>90</value>
+            </entry>
+            <entry>
+              <key>maximum-capacity</key>
+              <value>90</value>
+            </entry>
+          </params>
+        </update-queue>
+      </sched-conf>
+```
+
+
+Response Header:
+
+      HTTP/1.1 200 OK
+      Content-Type: application/xml
+      Transfer-Encoding: chunked
+
+**Removing queues**
+
+Request for removing queues from the queue hierarchy.
+
+Assuming we are using the capacity scheduler and the current queue configuration is three queues *root.default*, *root.a*, and *root.b*, this example removes both *root.a* and *root.b*. (More complex examples include removing a parent queue and its children.)
+
+**Note:** Queues must be put into `STOPPED` state before they are deleted. Any updated queue configuration should be a valid one i.e. queue-capacity at each *level* should be equal to 100%.
+
+
+HTTP Request:
+
+```xml
+      Accept: application/xml
+      PUT http://rm-http-address:port/ws/v1/cluster/scheduler-conf
+      Content-Type: application/xml
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <sched-conf>
+        <remove-queue>root.a</remove-queue>
+        <remove-queue>root.b</remove-queue>
+      </sched-conf>
+```
+
+
+Response Header:
+
+      HTTP/1.1 200 OK
+      Content-Type: application/xml
+      Transfer-Encoding: chunked
+
+**Updating global scheduler configurations**
+
+Request for updating global scheduler configurations. Assuming we are using the capacity scheduler, this example enables queue mappings. For global configuration updates, the full configuration key must be specified.
+
+HTTP Request:
+
+```xml
+      Accept: application/xml
+      PUT http://rm-http-address:port/ws/v1/cluster/scheduler-conf
+      Content-Type: application/xml
+      <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+      <sched-conf>
+        <global-updates>
+          <entry>
+            <key>yarn.scheduler.capacity.queue-mappings-override.enable</key>
+            <value>true</value>
+          </entry>
+        </global-updates>
+      </sched-conf>
+```
+
+
+Response Header:
+
+      HTTP/1.1 200 OK
+      Content-Type: application/xml
+      Transfer-Encoding: chunked

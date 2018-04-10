@@ -20,6 +20,8 @@ package org.apache.hadoop.fs.s3a.s3guard;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -31,6 +33,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Map;
@@ -100,7 +103,7 @@ public class LocalMetadataStore implements MetadataStore {
   public String toString() {
     final StringBuilder sb = new StringBuilder(
         "LocalMetadataStore{");
-    sb.append(", uriHost='").append(uriHost).append('\'');
+    sb.append("uriHost='").append(uriHost).append('\'');
     sb.append('}');
     return sb.toString();
   }
@@ -153,7 +156,9 @@ public class LocalMetadataStore implements MetadataStore {
         m.setIsEmptyDirectory(isEmptyDirectory(p));
       }
 
-      LOG.debug("get({}) -> {}", path, m == null ? "null" : m.prettyPrint());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("get({}) -> {}", path, m == null ? "null" : m.prettyPrint());
+      }
       return m;
     }
   }
@@ -298,12 +303,18 @@ public class LocalMetadataStore implements MetadataStore {
   }
 
   @Override
-  public synchronized void prune(long modTime) throws IOException {
+  public void prune(long modTime) throws IOException{
+    prune(modTime, "");
+  }
+
+  @Override
+  public synchronized void prune(long modTime, String keyPrefix)
+      throws IOException {
     Iterator<Map.Entry<Path, PathMetadata>> files =
         fileHash.entrySet().iterator();
     while (files.hasNext()) {
       Map.Entry<Path, PathMetadata> entry = files.next();
-      if (expired(entry.getValue().getFileStatus(), modTime)) {
+      if (expired(entry.getValue().getFileStatus(), modTime, keyPrefix)) {
         files.remove();
       }
     }
@@ -318,7 +329,7 @@ public class LocalMetadataStore implements MetadataStore {
 
       for (PathMetadata child : oldChildren) {
         FileStatus status = child.getFileStatus();
-        if (!expired(status, modTime)) {
+        if (!expired(status, modTime, keyPrefix)) {
           newChildren.add(child);
         }
       }
@@ -334,10 +345,11 @@ public class LocalMetadataStore implements MetadataStore {
     }
   }
 
-  private boolean expired(FileStatus status, long expiry) {
+  private boolean expired(FileStatus status, long expiry, String keyPrefix) {
     // Note: S3 doesn't track modification time on directories, so for
     // consistency with the DynamoDB implementation we ignore that here
-    return status.getModificationTime() < expiry && !status.isDirectory();
+    return status.getModificationTime() < expiry && !status.isDirectory()
+      && status.getPath().toString().startsWith(keyPrefix);
   }
 
   @VisibleForTesting
@@ -424,12 +436,22 @@ public class LocalMetadataStore implements MetadataStore {
     Preconditions.checkArgument(p.isAbsolute(), "Path must be absolute");
     URI uri = p.toUri();
     if (uriHost != null) {
-      Preconditions.checkArgument(!isEmpty(uri.getHost()));
+      Preconditions.checkArgument(StringUtils.isNotEmpty(uri.getHost()));
     }
     return p;
   }
 
-  private static boolean isEmpty(String s) {
-    return (s == null || s.isEmpty());
+  @Override
+  public Map<String, String> getDiagnostics() throws IOException {
+    Map<String, String> map = new HashMap<>();
+    map.put("name", "local://metadata");
+    map.put("uriHost", uriHost);
+    map.put("description", "Local in-VM metadata store for testing");
+    return map;
+  }
+
+  @Override
+  public void updateParameters(Map<String, String> parameters)
+      throws IOException {
   }
 }

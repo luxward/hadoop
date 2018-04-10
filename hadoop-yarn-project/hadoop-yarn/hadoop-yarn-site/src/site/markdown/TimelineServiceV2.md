@@ -133,9 +133,9 @@ New configuration parameters that are introduced with v.2 are marked bold.
 | Configuration Property | Description |
 |:---- |:---- |
 | `yarn.timeline-service.hostname` | The hostname of the Timeline service web application. Defaults to `0.0.0.0` |
-| `yarn.timeline-service.address` | Address for the Timeline server to start the RPC server. Defaults to `${yarn.timeline-service.hostname}:10200`. |
-| `yarn.timeline-service.webapp.address` | The http address of the Timeline service web application. Defaults to `${yarn.timeline-service.hostname}:8188`. |
-| `yarn.timeline-service.webapp.https.address` | The https address of the Timeline service web application. Defaults to `${yarn.timeline-service.hostname}:8190`. |
+| `yarn.timeline-service.reader.webapp.address` | The http address of the Timeline Reader web application. Defaults to `${yarn.timeline-service.hostname}:8188`. |
+| `yarn.timeline-service.reader.webapp.https.address` | The https address of the Timeline Reader web application. Defaults to `${yarn.timeline-service.hostname}:8190`. |
+| `yarn.timeline-service.reader.bind-host` | The actual address the timeline reader will bind to. If this optional address is set, reader server will bind to this address and the port specified in yarn.timeline-service.reader.webapp.address. This is most useful for making the service listen on all interfaces by setting to 0.0.0.0. |
 | **`yarn.timeline-service.hbase.configuration.file`** | Optional URL to an hbase-site.xml configuration file to be used to connect to the timeline-service hbase cluster. If empty or not specified, then the HBase configuration will be loaded from the classpath. When specified the values in the specified configuration file will override those from the ones that are present on the classpath. Defaults to `null`. |
 | **`yarn.timeline-service.writer.flush-interval-seconds`** | The setting that controls how often the timeline collector flushes the timeline writer. Defaults to `60`. |
 | **`yarn.timeline-service.app-collector.linger-period.ms`** | Time period till which the application collector will be alive in NM, after the  application master container finishes. Defaults to `1000` (1 second). |
@@ -190,9 +190,9 @@ Each step is explained in more detail below.
 
 ##### <a name="Set_up_the_HBase_cluster"> </a>Step 1) Set up the HBase cluster
 The first part is to set up or pick an Apache HBase cluster to use as the storage cluster. The
-version of Apache HBase that is supported with Timeline Service v.2 is 1.2.6. The 1.0.x versions
-do not work with Timeline Service v.2. Later versions of HBase have not been tested with
-Timeline Service.
+supported versions of Apache HBase are 1.2.6 (default) and 2.0.0-beta1.
+The 1.0.x versions do not work with Timeline Service v.2. By default, Hadoop releases are built
+with HBase 1.2.6. To use HBase 2.0.0-beta1, build from source with option -Dhbase.profile=2.0
 
 HBase has different deployment modes. Refer to the HBase book for understanding them and pick a
 mode that is suitable for your setup.
@@ -236,7 +236,7 @@ is needed for the `flowrun` table creation in the schema creator. The default HD
 For example,
 
     hadoop fs -mkdir /hbase/coprocessor
-    hadoop fs -put hadoop-yarn-server-timelineservice-hbase-3.0.0-alpha1-SNAPSHOT.jar
+    hadoop fs -put hadoop-yarn-server-timelineservice-hbase-coprocessor-3.2.0-SNAPSHOT.jar
            /hbase/coprocessor/hadoop-yarn-server-timelineservice.jar
 
 
@@ -415,13 +415,13 @@ Service v.2. Note that currently you need to be on the cluster to be able to wri
 Service. For example, an application master or code in the container can write to the Timeline
 Service, while an off-cluster MapReduce job submitter cannot.
 
-After creating the timeline v2 client, user also needs to set the timeline collector address for the application. If `AMRMClient` is used then by registering the timeline client by calling `AMRMClient#registerTimelineV2Client` is sufficient.
+After creating the timeline v2 client, user also needs to set the timeline collector info which contains the collector address and collector token(only in secure mode) for the application. If `AMRMClient` is used then by registering the timeline client by calling `AMRMClient#registerTimelineV2Client` is sufficient.
 
     amRMClient.registerTimelineV2Client(timelineClient);
 
 Else address needs to be retrieved from the AM allocate response and need to be set in timeline client explicitly.
 
-    timelineClient.setTimelineServiceAddress(response.getCollectorAddr());
+    timelineClient.setTimelineCollectorInfo(response.getCollectorInfo());
 
 You can create and publish your own entities, events, and metrics as with previous versions.
 
@@ -486,6 +486,8 @@ You can provide the flow context via YARN application tags:
 
     appContext.setApplicationTags(tags);
 
+Note : The Resource Manager converts YARN application tags to lowercase before storing them. Hence one should convert
+Flow names and Flow versions to lowercase before using them in REST API queries.
 
 ## Timeline Service v.2 REST API
 
@@ -853,8 +855,8 @@ none of the apps match the predicates, an empty list will be returned.
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 1. `fromid` -  If specified, retrieve the next set of application entities from the given fromid. The set of entities retrieved is inclusive of specified fromid.
    fromid should be taken from the value associated with FROM_ID info key in flow entity response which was sent earlier.
 
@@ -986,8 +988,8 @@ match the predicates, an empty list will be returned.
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 1. `fromid` -  If specified, retrieve the next set of application entities from the given fromid. The set of entities retrieved is inclusive of specified fromid.
    fromid should be taken from the value associated with FROM_ID info key in flow entity response which was sent earlier.
 
@@ -1067,8 +1069,8 @@ and app id.
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 
 #### Example JSON Response:
 
@@ -1193,8 +1195,8 @@ If none of the entities match the predicates, an empty list will be returned.
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 1. `fromid` -  If specified, retrieve the next set of generic entities from the given fromid. The set of entities retrieved is inclusive of specified fromid.
    fromid should be taken from the value associated with FROM_ID info key in flow entity response which was sent earlier.
 
@@ -1329,8 +1331,8 @@ If none of the entities match the predicates, an empty list will be returned.
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 1. `fromid` -  If specified, retrieve the next set of generic entities from the given fromid. The set of entities retrieved is inclusive of specified fromid.
    fromid should be taken from the value associated with FROM_ID info key in flow entity response which was sent earlier.
 
@@ -1427,8 +1429,8 @@ container ID. Similarly, application attempt can be queried by specifying entity
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 1. `entityidprefix` Defines the id prefix for the entity to be fetched. If specified, then entity retrieval will be faster.
 
 #### Example JSON Response:
@@ -1501,8 +1503,8 @@ If none of the entities match the predicates, an empty list will be returned.
   or metricstoretrieve is specified. Ignored otherwise. The maximum possible value for metricslimit can be maximum value of
   Integer. If it is not specified or has a value less than 1, and metrics have to be retrieved, then metricslimit will be
   considered as 1 i.e. latest single value of metric(s) will be returned.
-1. `metricsTimeStart` - If specified, then metrics for the entity after this timestamp are returned.
-1. `metricsTimeEnd` - If specified, then metrics for the entity before this timestamp are returned.
+1. `metricstimestart` - If specified, then metrics for the entity after this timestamp are returned.
+1. `metricstimeend` - If specified, then metrics for the entity before this timestamp are returned.
 1. `fromid` -  If specified, retrieve the next set of generic entities from the given fromid. The set of entities retrieved is inclusive of specified fromid.
    fromid should be taken from the value associated with FROM_ID info key in flow entity response which was sent earlier.
 

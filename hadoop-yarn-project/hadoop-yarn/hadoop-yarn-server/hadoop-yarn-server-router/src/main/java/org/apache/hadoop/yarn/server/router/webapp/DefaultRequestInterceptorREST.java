@@ -53,6 +53,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntryList;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodesInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.RMQueueAclInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationSubmissionRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateRequestInfo;
@@ -129,7 +130,9 @@ public class DefaultRequestInterceptorREST
   public NodesInfo getNodes(String states) {
     // states will be part of additionalParam
     Map<String, String[]> additionalParam = new HashMap<String, String[]>();
-    additionalParam.put(RMWSConsts.STATES, new String[] {states});
+    if (states != null && !states.isEmpty()) {
+      additionalParam.put(RMWSConsts.STATES, new String[] {states});
+    }
     return RouterWebServiceUtil.genericForward(webAppAddress, null,
         NodesInfo.class, HTTPMethods.GET,
         RMWSConsts.RM_WEB_SERVICE_PATH + RMWSConsts.NODES, null,
@@ -226,9 +229,11 @@ public class DefaultRequestInterceptorREST
   public LabelsToNodesInfo getLabelsToNodes(Set<String> labels)
       throws IOException {
     // labels will be part of additionalParam
-    Map<String, String[]> additionalParam = new HashMap<String, String[]>();
-    additionalParam.put(RMWSConsts.LABELS,
-        labels.toArray(new String[labels.size()]));
+    Map<String, String[]> additionalParam = new HashMap<>();
+    if (labels != null && !labels.isEmpty()) {
+      additionalParam.put(RMWSConsts.LABELS,
+          labels.toArray(new String[labels.size()]));
+    }
     return RouterWebServiceUtil.genericForward(webAppAddress, null,
         LabelsToNodesInfo.class, HTTPMethods.GET,
         RMWSConsts.RM_WEB_SERVICE_PATH + RMWSConsts.LABEL_MAPPINGS, null,
@@ -464,6 +469,15 @@ public class DefaultRequestInterceptorREST
         AppAttemptsInfo.class, HTTPMethods.GET, RMWSConsts.RM_WEB_SERVICE_PATH
             + RMWSConsts.APPS + "/" + appId + "/" + RMWSConsts.APPATTEMPTS,
         null, null);
+  }
+
+  @Override
+  public RMQueueAclInfo checkUserAccessToQueue(String queue, String username,
+      String queueAclType, HttpServletRequest hsr) {
+    return RouterWebServiceUtil.genericForward(webAppAddress, hsr,
+        RMQueueAclInfo.class, HTTPMethods.GET,
+        RMWSConsts.RM_WEB_SERVICE_PATH + RMWSConsts.QUEUES + "/" + queue
+            + "/access", null, null);
   }
 
   @Override

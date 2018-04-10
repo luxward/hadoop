@@ -18,35 +18,49 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.ClientConfiguration;
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
-import com.amazonaws.services.s3.model.DeleteObjectRequest;
-import com.amazonaws.services.s3.model.DeleteObjectsRequest;
-import com.amazonaws.services.s3.model.DeleteObjectsResult;
-import com.amazonaws.services.s3.model.ListObjectsRequest;
-import com.amazonaws.services.s3.model.ObjectListing;
-import com.amazonaws.services.s3.model.PutObjectRequest;
-import com.amazonaws.services.s3.model.PutObjectResult;
-import com.amazonaws.services.s3.model.S3ObjectSummary;
-import com.google.common.base.Preconditions;
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import static org.apache.hadoop.fs.s3a.Constants.*;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+
+import com.amazonaws.AmazonClientException;
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.ClientConfiguration;
+import com.amazonaws.SdkClientException;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3Client;
+import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
+import com.amazonaws.services.s3.model.CompleteMultipartUploadResult;
+import com.amazonaws.services.s3.model.DeleteObjectRequest;
+import com.amazonaws.services.s3.model.DeleteObjectsRequest;
+import com.amazonaws.services.s3.model.DeleteObjectsResult;
+import com.amazonaws.services.s3.model.GetObjectRequest;
+import com.amazonaws.services.s3.model.InitiateMultipartUploadRequest;
+import com.amazonaws.services.s3.model.InitiateMultipartUploadResult;
+import com.amazonaws.services.s3.model.ListMultipartUploadsRequest;
+import com.amazonaws.services.s3.model.ListObjectsRequest;
+import com.amazonaws.services.s3.model.ListObjectsV2Request;
+import com.amazonaws.services.s3.model.ListObjectsV2Result;
+import com.amazonaws.services.s3.model.MultipartUploadListing;
+import com.amazonaws.services.s3.model.ObjectListing;
+import com.amazonaws.services.s3.model.PutObjectRequest;
+import com.amazonaws.services.s3.model.PutObjectResult;
+import com.amazonaws.services.s3.model.S3Object;
+import com.amazonaws.services.s3.model.S3ObjectSummary;
+import com.amazonaws.services.s3.model.UploadPartRequest;
+import com.amazonaws.services.s3.model.UploadPartResult;
+import com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 
 /**
  * A wrapper around {@link com.amazonaws.services.s3.AmazonS3} that injects
@@ -57,33 +71,15 @@ import java.util.Map;
 @InterfaceStability.Unstable
 public class InconsistentAmazonS3Client extends AmazonS3Client {
 
-  /**
-   * Keys containing this substring will be subject to delayed visibility.
-   */
-  public static final String DEFAULT_DELAY_KEY_SUBSTRING = "DELAY_LISTING_ME";
-
-  /**
-   * How many seconds affected keys will be delayed from appearing in listing.
-   * This should probably be a config value.
-   */
-  public static final long DEFAULT_DELAY_KEY_MSEC = 5 * 1000;
-
-  public static final float DEFAULT_DELAY_KEY_PROBABILITY = 1.0f;
-
-  /** Special config value since we can't store empty strings in XML. */
-  public static final String MATCH_ALL_KEYS = "*";
-
   private static final Logger LOG =
       LoggerFactory.getLogger(InconsistentAmazonS3Client.class);
 
-  /** Empty string matches all keys. */
-  private String delayKeySubstring;
+  private FailureInjectionPolicy policy;
 
-  /** Probability to delay visibility of a matching key. */
-  private float delayKeyProbability;
-
-  /** Time in milliseconds to delay visibility of newly modified object. */
-  private long delayKeyMsec;
+  /**
+   * Counter of failures since last reset.
+   */
+  private final AtomicLong failureCounter = new AtomicLong(0);
 
   /**
    * Composite of data we need to track about recently deleted objects:
@@ -109,8 +105,10 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
     }
   }
 
-  /** Map of key to delay -> time it was deleted + object summary (object
-   * summary is null for prefixes. */
+  /**
+   * Map of key to delay -> time it was deleted + object summary (object summary
+   * is null for prefixes.
+   */
   private Map<String, Delete> delayedDeletes = new HashMap<>();
 
   /** Map of key to delay -> time it was created. */
@@ -119,23 +117,42 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
   public InconsistentAmazonS3Client(AWSCredentialsProvider credentials,
       ClientConfiguration clientConfiguration, Configuration conf) {
     super(credentials, clientConfiguration);
-    setupConfig(conf);
+    policy = new FailureInjectionPolicy(conf);
   }
 
-  protected void setupConfig(Configuration conf) {
 
-    delayKeySubstring = conf.get(FAIL_INJECT_INCONSISTENCY_KEY,
-        DEFAULT_DELAY_KEY_SUBSTRING);
-    // "" is a substring of all strings, use it to match all keys.
-    if (delayKeySubstring.equals(MATCH_ALL_KEYS)) {
-      delayKeySubstring = "";
-    }
-    delayKeyProbability = conf.getFloat(FAIL_INJECT_INCONSISTENCY_PROBABILITY,
-        DEFAULT_DELAY_KEY_PROBABILITY);
-    delayKeyMsec = conf.getLong(FAIL_INJECT_INCONSISTENCY_MSEC,
-        DEFAULT_DELAY_KEY_MSEC);
-    LOG.info("Enabled with {} msec delay, substring {}, probability {}",
-        delayKeyMsec, delayKeySubstring, delayKeyProbability);
+  /**
+   * Clear any accumulated inconsistency state. Used by tests to make paths
+   * visible again.
+   * @param fs S3AFileSystem under test
+   * @throws Exception on failure
+   */
+  public static void clearInconsistency(S3AFileSystem fs) throws Exception {
+    AmazonS3 s3 = fs.getAmazonS3ClientForTesting("s3guard");
+    InconsistentAmazonS3Client ic = InconsistentAmazonS3Client.castFrom(s3);
+    ic.clearInconsistency();
+  }
+
+  /**
+   * A way for tests to patch in a different fault injection policy at runtime.
+   * @param fs filesystem under test
+   *
+   */
+  public static void setFailureInjectionPolicy(S3AFileSystem fs,
+      FailureInjectionPolicy policy) throws Exception {
+    AmazonS3 s3 = fs.getAmazonS3ClientForTesting("s3guard");
+    InconsistentAmazonS3Client ic = InconsistentAmazonS3Client.castFrom(s3);
+    ic.replacePolicy(policy);
+  }
+
+  private void replacePolicy(FailureInjectionPolicy pol) {
+    this.policy = pol;
+  }
+
+  @Override
+  public String toString() {
+    return String.format("Inconsistent S3 Client: %s; failure count %d",
+        policy, failureCounter.get());
   }
 
   /**
@@ -170,10 +187,11 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
   public DeleteObjectsResult deleteObjects(DeleteObjectsRequest
       deleteObjectsRequest)
       throws AmazonClientException, AmazonServiceException {
+    maybeFail();
     for (DeleteObjectsRequest.KeyVersion keyVersion :
         deleteObjectsRequest.getKeys()) {
-      registerDeleteObject(keyVersion.getKey(), deleteObjectsRequest
-          .getBucketName());
+      registerDeleteObject(keyVersion.getKey(),
+          deleteObjectsRequest.getBucketName());
     }
     return super.deleteObjects(deleteObjectsRequest);
   }
@@ -183,6 +201,7 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
       throws AmazonClientException, AmazonServiceException {
     String key = deleteObjectRequest.getKey();
     LOG.debug("key {}", key);
+    maybeFail();
     registerDeleteObject(key, deleteObjectRequest.getBucketName());
     super.deleteObject(deleteObjectRequest);
   }
@@ -192,18 +211,54 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
   public PutObjectResult putObject(PutObjectRequest putObjectRequest)
       throws AmazonClientException, AmazonServiceException {
     LOG.debug("key {}", putObjectRequest.getKey());
+    maybeFail();
     registerPutObject(putObjectRequest);
     return super.putObject(putObjectRequest);
   }
 
-  /* We should only need to override this version of listObjects() */
+  /* We should only need to override these versions of listObjects() */
   @Override
   public ObjectListing listObjects(ListObjectsRequest listObjectsRequest)
       throws AmazonClientException, AmazonServiceException {
+    maybeFail();
+    return innerlistObjects(listObjectsRequest);
+  }
+
+  /**
+   * Run the list object call without any failure probability.
+   * This stops a very aggressive failure rate from completely overloading
+   * the retry logic.
+   * @param listObjectsRequest request
+   * @return listing
+   * @throws AmazonClientException failure
+   */
+  private ObjectListing innerlistObjects(ListObjectsRequest listObjectsRequest)
+      throws AmazonClientException, AmazonServiceException {
     LOG.debug("prefix {}", listObjectsRequest.getPrefix());
     ObjectListing listing = super.listObjects(listObjectsRequest);
-    listing = filterListObjects(listObjectsRequest, listing);
+    listing = filterListObjects(listing);
     listing = restoreListObjects(listObjectsRequest, listing);
+    return listing;
+  }
+
+  /* We should only need to override these versions of listObjects() */
+  @Override
+  public ListObjectsV2Result listObjectsV2(ListObjectsV2Request request)
+      throws AmazonClientException, AmazonServiceException {
+    maybeFail();
+    return innerListObjectsV2(request);
+  }
+
+  /**
+   * Non failing V2 list object request.
+   * @param request request
+   * @return result.
+   */
+  private ListObjectsV2Result innerListObjectsV2(ListObjectsV2Request request) {
+    LOG.debug("prefix {}", request.getPrefix());
+    ListObjectsV2Result listing = super.listObjectsV2(request);
+    listing = filterListObjectsV2(listing);
+    listing = restoreListObjectsV2(request, listing);
     return listing;
   }
 
@@ -211,12 +266,9 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
       S3ObjectSummary item) {
     // Behavior of S3ObjectSummary
     String key = item.getKey();
-    for (S3ObjectSummary member : list) {
-      if (member.getKey().equals(key)) {
-        return;
-      }
+    if (list.stream().noneMatch((member) -> member.getKey().equals(key))) {
+      list.add(item);
     }
-    list.add(item);
   }
 
   /**
@@ -282,21 +334,58 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
     // recursive list has no delimiter, returns everything that matches a
     // prefix.
     boolean recursiveObjectList = !("/".equals(request.getDelimiter()));
+    String prefix = request.getPrefix();
+
+    restoreDeleted(outputList, outputPrefixes, recursiveObjectList, prefix);
+    return new CustomObjectListing(rawListing, outputList, outputPrefixes);
+  }
+
+  /**
+   * V2 list API variant of
+   * {@link #restoreListObjects(ListObjectsRequest, ObjectListing)}.
+   * @param request original v2 list request
+   * @param result raw s3 result
+   */
+  private ListObjectsV2Result restoreListObjectsV2(ListObjectsV2Request request,
+      ListObjectsV2Result result) {
+    List<S3ObjectSummary> outputList = result.getObjectSummaries();
+    List<String> outputPrefixes = result.getCommonPrefixes();
+    // recursive list has no delimiter, returns everything that matches a
+    // prefix.
+    boolean recursiveObjectList = !("/".equals(request.getDelimiter()));
+    String prefix = request.getPrefix();
+
+    restoreDeleted(outputList, outputPrefixes, recursiveObjectList, prefix);
+    return new CustomListObjectsV2Result(result, outputList, outputPrefixes);
+  }
+
+
+  /**
+   * Main logic for
+   * {@link #restoreListObjects(ListObjectsRequest, ObjectListing)} and
+   * the v2 variant above.
+   * @param summaries object summary list to modify.
+   * @param prefixes prefix list to modify
+   * @param recursive true if recursive list request
+   * @param prefix prefix for original list request
+   */
+  private void restoreDeleted(List<S3ObjectSummary> summaries,
+      List<String> prefixes, boolean recursive, String prefix) {
 
     // Go through all deleted keys
     for (String key : new HashSet<>(delayedDeletes.keySet())) {
       Delete delete = delayedDeletes.get(key);
       if (isKeyDelayed(delete.time(), key)) {
-        if (isDescendant(request.getPrefix(), key, recursiveObjectList)) {
+        if (isDescendant(prefix, key, recursive)) {
           if (delete.summary() != null) {
-            addSummaryIfNotPresent(outputList, delete.summary());
+            addSummaryIfNotPresent(summaries, delete.summary());
           }
         }
         // Non-recursive list has delimiter: will return rolled-up prefixes for
         // all keys that are not direct children
-        if (!recursiveObjectList) {
-          if (isDescendant(request.getPrefix(), key, true)) {
-            addPrefixIfNotPresent(outputPrefixes, request.getPrefix(), key);
+        if (!recursive) {
+          if (isDescendant(prefix, key, true)) {
+            addPrefixIfNotPresent(prefixes, prefix, key);
           }
         }
       } else {
@@ -304,31 +393,48 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
         delayedDeletes.remove(key);
       }
     }
+  }
+
+  private ObjectListing filterListObjects(ObjectListing rawListing) {
+
+    // Filter object listing
+    List<S3ObjectSummary> outputList = filterSummaries(
+        rawListing.getObjectSummaries());
+
+    // Filter prefixes (directories)
+    List<String> outputPrefixes = filterPrefixes(
+        rawListing.getCommonPrefixes());
 
     return new CustomObjectListing(rawListing, outputList, outputPrefixes);
   }
 
-  private ObjectListing filterListObjects(ListObjectsRequest request,
-      ObjectListing rawListing) {
-
+  private ListObjectsV2Result filterListObjectsV2(ListObjectsV2Result raw) {
     // Filter object listing
+    List<S3ObjectSummary> outputList = filterSummaries(
+        raw.getObjectSummaries());
+
+    // Filter prefixes (directories)
+    List<String> outputPrefixes = filterPrefixes(raw.getCommonPrefixes());
+
+    return new CustomListObjectsV2Result(raw, outputList, outputPrefixes);
+  }
+
+  private List<S3ObjectSummary> filterSummaries(
+      List<S3ObjectSummary> summaries) {
     List<S3ObjectSummary> outputList = new ArrayList<>();
-    for (S3ObjectSummary s : rawListing.getObjectSummaries()) {
+    for (S3ObjectSummary s : summaries) {
       String key = s.getKey();
       if (!isKeyDelayed(delayedPutKeys.get(key), key)) {
         outputList.add(s);
       }
     }
+    return outputList;
+  }
 
-    // Filter prefixes (directories)
-    List<String> outputPrefixes = new ArrayList<>();
-    for (String key : rawListing.getCommonPrefixes()) {
-      if (!isKeyDelayed(delayedPutKeys.get(key), key)) {
-        outputPrefixes.add(key);
-      }
-    }
-
-    return new CustomObjectListing(rawListing, outputList, outputPrefixes);
+  private List<String> filterPrefixes(List<String> prefixes) {
+    return prefixes.stream()
+        .filter(key -> !isKeyDelayed(delayedPutKeys.get(key), key))
+        .collect(Collectors.toList());
   }
 
   private boolean isKeyDelayed(Long enqueueTime, String key) {
@@ -337,54 +443,37 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
       return false;
     }
     long currentTime = System.currentTimeMillis();
-    long deadline = enqueueTime + delayKeyMsec;
+    long deadline = enqueueTime + policy.getDelayKeyMsec();
     if (currentTime >= deadline) {
       delayedDeletes.remove(key);
       LOG.debug("no longer delaying {}", key);
       return false;
-    } else  {
+    } else {
       LOG.info("delaying {}", key);
       return true;
     }
   }
 
   private void registerDeleteObject(String key, String bucket) {
-    if (shouldDelay(key)) {
+    if (policy.shouldDelay(key)) {
       // Record summary so we can add it back for some time post-deletion
-      S3ObjectSummary summary = null;
-      ObjectListing list = listObjects(bucket, key);
-      for (S3ObjectSummary result : list.getObjectSummaries()) {
-        if (result.getKey().equals(key)) {
-          summary = result;
-          break;
-        }
-      }
+      ListObjectsRequest request = new ListObjectsRequest()
+              .withBucketName(bucket)
+              .withPrefix(key);
+      S3ObjectSummary summary = innerlistObjects(request).getObjectSummaries()
+          .stream()
+          .filter(result -> result.getKey().equals(key))
+          .findFirst()
+          .orElse(null);
       delayedDeletes.put(key, new Delete(System.currentTimeMillis(), summary));
     }
   }
 
   private void registerPutObject(PutObjectRequest req) {
     String key = req.getKey();
-    if (shouldDelay(key)) {
+    if (policy.shouldDelay(key)) {
       enqueueDelayedPut(key);
     }
-  }
-
-  /**
-   * Should we delay listing visibility for this key?
-   * @param key key which is being put
-   * @return true if we should delay
-   */
-  private boolean shouldDelay(String key) {
-    boolean delay = key.contains(delayKeySubstring);
-    delay = delay && trueWithProbability(delayKeyProbability);
-    LOG.debug("{} -> {}", key, delay);
-    return delay;
-  }
-
-
-  private boolean trueWithProbability(float p) {
-    return Math.random() < p;
   }
 
   /**
@@ -397,7 +486,110 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
     delayedPutKeys.put(key, System.currentTimeMillis());
   }
 
+  @Override
+  public CompleteMultipartUploadResult completeMultipartUpload(
+      CompleteMultipartUploadRequest completeMultipartUploadRequest)
+      throws SdkClientException, AmazonServiceException {
+    maybeFail();
+    return super.completeMultipartUpload(completeMultipartUploadRequest);
+  }
+
+  @Override
+  public UploadPartResult uploadPart(UploadPartRequest uploadPartRequest)
+      throws SdkClientException, AmazonServiceException {
+    maybeFail();
+    return super.uploadPart(uploadPartRequest);
+  }
+
+  @Override
+  public InitiateMultipartUploadResult initiateMultipartUpload(
+      InitiateMultipartUploadRequest initiateMultipartUploadRequest)
+      throws SdkClientException, AmazonServiceException {
+    maybeFail();
+    return super.initiateMultipartUpload(initiateMultipartUploadRequest);
+  }
+
+  @Override
+  public MultipartUploadListing listMultipartUploads(
+      ListMultipartUploadsRequest listMultipartUploadsRequest)
+      throws SdkClientException, AmazonServiceException {
+    maybeFail();
+    return super.listMultipartUploads(listMultipartUploadsRequest);
+  }
+
+  public long getDelayKeyMsec() {
+    return policy.getDelayKeyMsec();
+  }
+
+  /**
+   * Set the probability of throttling a request.
+   * @param throttleProbability the probability of a request being throttled.
+   */
+  public void setThrottleProbability(float throttleProbability) {
+    policy.setThrottleProbability(throttleProbability);
+  }
+
+  /**
+   * Conditionally fail the operation.
+   * @param errorMsg description of failure
+   * @param statusCode http status code for error
+   * @throws AmazonClientException if the client chooses to fail
+   * the request.
+   */
+  private void maybeFail(String errorMsg, int statusCode)
+      throws AmazonClientException {
+    // code structure here is to line up for more failures later
+    AmazonServiceException ex = null;
+    if (policy.trueWithProbability(policy.getThrottleProbability())) {
+      // throttle the request
+      ex = new AmazonServiceException(errorMsg
+          + " count = " + (failureCounter.get() + 1), null);
+      ex.setStatusCode(statusCode);
+    }
+
+    int failureLimit = policy.getFailureLimit();
+    if (ex != null) {
+      long count = failureCounter.incrementAndGet();
+      if (failureLimit == 0
+          || (failureLimit > 0 && count < failureLimit)) {
+        throw ex;
+      }
+    }
+  }
+
+  private void maybeFail() {
+    maybeFail("throttled", 503);
+  }
+
+  /**
+   * Set the limit on failures before all operations pass through.
+   * This resets the failure count.
+   * @param limit limit; "0" means "no limit"
+   */
+  public void setFailureLimit(int limit) {
+    policy.setFailureLimit(limit);
+    failureCounter.set(0);
+  }
+
+  @Override
+  public S3Object getObject(GetObjectRequest var1) throws SdkClientException,
+      AmazonServiceException {
+    maybeFail("file not found", 404);
+    S3Object o = super.getObject(var1);
+    LOG.debug("Wrapping in InconsistentS3Object for key {}", var1.getKey());
+    return new InconsistentS3Object(o, policy);
+  }
+
+  @Override
+  public S3Object getObject(String bucketName, String key)
+      throws SdkClientException, AmazonServiceException {
+    S3Object o = super.getObject(bucketName, key);
+    LOG.debug("Wrapping in InconsistentS3Object for key {}", key);
+    return new InconsistentS3Object(o, policy);
+  }
+
   /** Since ObjectListing is immutable, we just override it with wrapper. */
+  @SuppressWarnings("serial")
   private static class CustomObjectListing extends ObjectListing {
 
     private final List<S3ObjectSummary> customListing;
@@ -419,6 +611,40 @@ public class InconsistentAmazonS3Client extends AmazonS3Client {
       this.setNextMarker(rawListing.getNextMarker());
       this.setPrefix(rawListing.getPrefix());
       this.setTruncated(rawListing.isTruncated());
+    }
+
+    @Override
+    public List<S3ObjectSummary> getObjectSummaries() {
+      return customListing;
+    }
+
+    @Override
+    public List<String> getCommonPrefixes() {
+      return customPrefixes;
+    }
+  }
+
+  @SuppressWarnings("serial")
+  private static class CustomListObjectsV2Result extends ListObjectsV2Result {
+
+    private final List<S3ObjectSummary> customListing;
+    private final List<String> customPrefixes;
+
+    CustomListObjectsV2Result(ListObjectsV2Result raw,
+        List<S3ObjectSummary> customListing, List<String> customPrefixes) {
+      super();
+      this.customListing = customListing;
+      this.customPrefixes = customPrefixes;
+
+      this.setBucketName(raw.getBucketName());
+      this.setCommonPrefixes(raw.getCommonPrefixes());
+      this.setDelimiter(raw.getDelimiter());
+      this.setEncodingType(raw.getEncodingType());
+      this.setStartAfter(raw.getStartAfter());
+      this.setMaxKeys(raw.getMaxKeys());
+      this.setContinuationToken(raw.getContinuationToken());
+      this.setPrefix(raw.getPrefix());
+      this.setTruncated(raw.isTruncated());
     }
 
     @Override

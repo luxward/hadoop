@@ -84,6 +84,14 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_BACKUP_HTTP_ADDRESS_KEY;
   public static final String  DFS_NAMENODE_BACKUP_HTTP_ADDRESS_DEFAULT = "0.0.0.0:50105";
   public static final String  DFS_NAMENODE_BACKUP_SERVICE_RPC_ADDRESS_KEY = "dfs.namenode.backup.dnrpc-address";
+  public static final String DFS_PROVIDED_ALIASMAP_INMEMORY_RPC_ADDRESS = "dfs.provided.aliasmap.inmemory.dnrpc-address";
+  public static final String DFS_PROVIDED_ALIASMAP_INMEMORY_RPC_ADDRESS_DEFAULT = "0.0.0.0:50200";
+  public static final String DFS_PROVIDED_ALIASMAP_INMEMORY_LEVELDB_DIR = "dfs.provided.aliasmap.inmemory.leveldb.dir";
+  public static final String DFS_PROVIDED_ALIASMAP_INMEMORY_BATCH_SIZE = "dfs.provided.aliasmap.inmemory.batch-size";
+  public static final int DFS_PROVIDED_ALIASMAP_INMEMORY_BATCH_SIZE_DEFAULT = 500;
+  public static final String DFS_PROVIDED_ALIASMAP_INMEMORY_ENABLED = "dfs.provided.aliasmap.inmemory.enabled";
+  public static final boolean DFS_PROVIDED_ALIASMAP_INMEMORY_ENABLED_DEFAULT = false;
+
   public static final String  DFS_DATANODE_BALANCE_BANDWIDTHPERSEC_KEY =
       HdfsClientConfigKeys.DeprecatedKeys.DFS_DATANODE_BALANCE_BANDWIDTHPERSEC_KEY;
   public static final long    DFS_DATANODE_BALANCE_BANDWIDTHPERSEC_DEFAULT =
@@ -270,6 +278,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.posix.acl.inheritance.enabled";
   public static final boolean
       DFS_NAMENODE_POSIX_ACL_INHERITANCE_ENABLED_DEFAULT = true;
+  public static final String DFS_REFORMAT_DISABLED = "dfs.reformat.disabled";
+  public static final boolean DFS_REFORMAT_DISABLED_DEFAULT = false;
+
   public static final String  DFS_NAMENODE_XATTRS_ENABLED_KEY = "dfs.namenode.xattrs.enabled";
   public static final boolean DFS_NAMENODE_XATTRS_ENABLED_DEFAULT = true;
   public static final String  DFS_ADMIN = "dfs.cluster.administrators";
@@ -312,7 +323,27 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
 
   public static final String  DFS_NAMENODE_EDITS_ASYNC_LOGGING =
       "dfs.namenode.edits.asynclogging";
-  public static final boolean DFS_NAMENODE_EDITS_ASYNC_LOGGING_DEFAULT = false;
+  public static final boolean DFS_NAMENODE_EDITS_ASYNC_LOGGING_DEFAULT = true;
+
+  public static final String DFS_NAMENODE_PROVIDED_ENABLED = "dfs.namenode.provided.enabled";
+  public static final boolean DFS_NAMENODE_PROVIDED_ENABLED_DEFAULT = false;
+
+  public static final String DFS_PROVIDER_STORAGEUUID = "dfs.provided.storage.id";
+  public static final String DFS_PROVIDER_STORAGEUUID_DEFAULT =  "DS-PROVIDED";
+  public static final String DFS_PROVIDED_ALIASMAP_CLASS = "dfs.provided.aliasmap.class";
+  public static final String DFS_PROVIDED_ALIASMAP_LOAD_RETRIES = "dfs.provided.aliasmap.load.retries";
+
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_DELIMITER = "dfs.provided.aliasmap.text.delimiter";
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_DELIMITER_DEFAULT = ",";
+
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_READ_FILE = "dfs.provided.aliasmap.text.read.file";
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_READ_FILE_DEFAULT = "file:///tmp/blocks.csv";
+
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_CODEC = "dfs.provided.aliasmap.text.codec";
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_WRITE_DIR = "dfs.provided.aliasmap.text.write.dir";
+  public static final String DFS_PROVIDED_ALIASMAP_TEXT_WRITE_DIR_DEFAULT = "file:///tmp/";
+
+  public static final String DFS_PROVIDED_ALIASMAP_LEVELDB_PATH = "dfs.provided.aliasmap.leveldb.path";
 
   public static final String  DFS_LIST_LIMIT = "dfs.ls.limit";
   public static final int     DFS_LIST_LIMIT_DEFAULT = 1000;
@@ -359,6 +390,32 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
 
   public static final String DFS_NAMENODE_SNAPSHOT_SKIP_CAPTURE_ACCESSTIME_ONLY_CHANGE = "dfs.namenode.snapshot.skip.capture.accesstime-only-change";
   public static final boolean DFS_NAMENODE_SNAPSHOT_SKIP_CAPTURE_ACCESSTIME_ONLY_CHANGE_DEFAULT = false;
+
+  public static final String
+      DFS_NAMENODE_SNAPSHOT_DIFF_ALLOW_SNAP_ROOT_DESCENDANT =
+      "dfs.namenode.snapshotdiff.allow.snap-root-descendant";
+  public static final boolean
+      DFS_NAMENODE_SNAPSHOT_DIFF_ALLOW_SNAP_ROOT_DESCENDANT_DEFAULT =
+      true;
+
+  public static final String
+      DFS_NAMENODE_SNAPSHOT_DIFF_LISTING_LIMIT  =
+      "dfs.namenode.snapshotdiff.listing.limit";
+  public static final int
+      DFS_NAMENODE_SNAPSHOT_DIFF_LISTING_LIMIT_DEFAULT = 1000;
+
+  public static final String DFS_NAMENODE_SNAPSHOT_MAX_LIMIT =
+      "dfs.namenode.snapshot.max.limit";
+
+  public static final int DFS_NAMENODE_SNAPSHOT_MAX_LIMIT_DEFAULT = 65536;
+  public static final String DFS_NAMENODE_SNAPSHOT_SKIPLIST_SKIP_INTERVAL =
+      "dfs.namenode.snapshot.skiplist.interval";
+  public static final int DFS_NAMENODE_SNAPSHOT_SKIPLIST_SKIP_INTERVAL_DEFAULT =
+      10;
+  public static final String DFS_NAMENODE_SNAPSHOT_SKIPLIST_MAX_LEVELS =
+      "dfs.namenode.snapshot.skiplist.max.levels";
+  public static final int
+      DFS_NAMENODE_SNAPSHOT_SKIPLIST_MAX_SKIP_LEVELS_DEFAULT = 0;
 
   // Whether to enable datanode's stale state detection and usage for reads
   public static final String DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_READ_KEY = "dfs.namenode.avoid.read.stale.datanode";
@@ -563,22 +620,22 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String DFS_DATANODE_DISK_CHECK_TIMEOUT_DEFAULT =
       "10m";
 
-  public static final String  DFS_NAMENODE_EC_POLICIES_ENABLED_KEY = "dfs.namenode.ec.policies.enabled";
-  public static final String  DFS_NAMENODE_EC_POLICIES_ENABLED_DEFAULT = "";
   public static final String  DFS_NAMENODE_EC_POLICIES_MAX_CELLSIZE_KEY = "dfs.namenode.ec.policies.max.cellsize";
   public static final int     DFS_NAMENODE_EC_POLICIES_MAX_CELLSIZE_DEFAULT = 4 * 1024 * 1024;
   public static final String  DFS_NAMENODE_EC_SYSTEM_DEFAULT_POLICY =
       "dfs.namenode.ec.system.default.policy";
   public static final String  DFS_NAMENODE_EC_SYSTEM_DEFAULT_POLICY_DEFAULT =
       "RS-6-3-1024k";
-  public static final String  DFS_DN_EC_RECONSTRUCTION_STRIPED_READ_THREADS_KEY = "dfs.datanode.ec.reconstruction.stripedread.threads";
-  public static final int     DFS_DN_EC_RECONSTRUCTION_STRIPED_READ_THREADS_DEFAULT = 20;
   public static final String  DFS_DN_EC_RECONSTRUCTION_STRIPED_READ_BUFFER_SIZE_KEY = "dfs.datanode.ec.reconstruction.stripedread.buffer.size";
   public static final int     DFS_DN_EC_RECONSTRUCTION_STRIPED_READ_BUFFER_SIZE_DEFAULT = 64 * 1024;
   public static final String  DFS_DN_EC_RECONSTRUCTION_STRIPED_READ_TIMEOUT_MILLIS_KEY = "dfs.datanode.ec.reconstruction.stripedread.timeout.millis";
   public static final int     DFS_DN_EC_RECONSTRUCTION_STRIPED_READ_TIMEOUT_MILLIS_DEFAULT = 5000; //5s
-  public static final String  DFS_DN_EC_RECONSTRUCTION_STRIPED_BLK_THREADS_KEY = "dfs.datanode.ec.reconstruction.stripedblock.threads.size";
-  public static final int     DFS_DN_EC_RECONSTRUCTION_STRIPED_BLK_THREADS_DEFAULT = 8;
+  public static final String  DFS_DN_EC_RECONSTRUCTION_THREADS_KEY = "dfs.datanode.ec.reconstruction.threads";
+  public static final int     DFS_DN_EC_RECONSTRUCTION_THREADS_DEFAULT = 8;
+  public static final String  DFS_DN_EC_RECONSTRUCTION_XMITS_WEIGHT_KEY =
+      "dfs.datanode.ec.reconstruction.xmits.weight";
+  public static final float   DFS_DN_EC_RECONSTRUCTION_XMITS_WEIGHT_DEFAULT =
+      0.5f;
 
   public static final String
       DFS_DATANODE_DIRECTORYSCAN_THROTTLE_LIMIT_MS_PER_SEC_KEY =
@@ -596,6 +653,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String  DFS_DATANODE_HTTP_ADDRESS_KEY = "dfs.datanode.http.address";
   public static final int     DFS_DATANODE_HTTP_DEFAULT_PORT = 9864;
   public static final String  DFS_DATANODE_HTTP_ADDRESS_DEFAULT = "0.0.0.0:" + DFS_DATANODE_HTTP_DEFAULT_PORT;
+  public static final String  DFS_DATANODE_HTTP_INTERNAL_PROXY_PORT =
+      "dfs.datanode.http.internal-proxy.port";
   public static final String  DFS_DATANODE_MAX_RECEIVER_THREADS_KEY =
       HdfsClientConfigKeys.DeprecatedKeys.DFS_DATANODE_MAX_RECEIVER_THREADS_KEY;
   public static final int     DFS_DATANODE_MAX_RECEIVER_THREADS_DEFAULT = 4096;
@@ -728,6 +787,10 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String DFS_EDIT_LOG_TRANSFER_RATE_KEY =
       "dfs.edit.log.transfer.bandwidthPerSec";
   public static final long DFS_EDIT_LOG_TRANSFER_RATE_DEFAULT = 0; //no throttling
+
+  public static final String DFS_QJM_OPERATIONS_TIMEOUT =
+      "dfs.qjm.operations.timeout";
+  public static final long DFS_QJM_OPERATIONS_TIMEOUT_DEFAULT = 60000;
 
   // Datanode File IO Stats
   public static final String DFS_DATANODE_ENABLE_FILEIO_FAULT_INJECTION_KEY =
@@ -1081,7 +1144,7 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   // Disk Balancer Keys
   public static final String DFS_DISK_BALANCER_ENABLED =
       "dfs.disk.balancer.enabled";
-  public static final boolean DFS_DISK_BALANCER_ENABLED_DEFAULT = false;
+  public static final boolean DFS_DISK_BALANCER_ENABLED_DEFAULT = true;
 
   public static final String DFS_DISK_BALANCER_MAX_DISK_THROUGHPUT =
       "dfs.disk.balancer.max.disk.throughputInMBperSec";
@@ -1091,6 +1154,11 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String DFS_DISK_BALANCER_MAX_DISK_ERRORS =
       "dfs.disk.balancer.max.disk.errors";
   public static final int DFS_DISK_BALANCER_MAX_DISK_ERRORS_DEFAULT = 5;
+
+  public static final String DFS_DISK_BALANCER_PLAN_VALID_INTERVAL =
+      "dfs.disk.balancer.plan.valid.interval";
+  public static final String DFS_DISK_BALANCER_PLAN_VALID_INTERVAL_DEFAULT =
+      "1d";
 
 
   public static final String DFS_DISK_BALANCER_BLOCK_TOLERANCE =
@@ -1439,4 +1507,5 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   @Deprecated
   public static final long    DFS_CLIENT_KEY_PROVIDER_CACHE_EXPIRY_DEFAULT =
       HdfsClientConfigKeys.DFS_CLIENT_KEY_PROVIDER_CACHE_EXPIRY_DEFAULT;
+
 }

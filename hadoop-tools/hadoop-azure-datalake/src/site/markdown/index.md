@@ -22,6 +22,10 @@ The `hadoop-azure-datalake` module provides support for integration with the
 [Azure Data Lake Store](https://azure.microsoft.com/en-in/documentation/services/data-lake-store/).
 This support comes via the JAR file `azure-datalake-store.jar`.
 
+### Related Documents
+
+* [Troubleshooting](troubleshooting_adl.html).
+
 ## Features
 
 * Read and write data stored in an Azure Data Lake Storage account.
@@ -32,6 +36,7 @@ This support comes via the JAR file `azure-datalake-store.jar`.
 * Tested for scale.
 * API `setOwner()`, `setAcl`, `removeAclEntries()`, `modifyAclEntries()` accepts UPN or OID
   (Object ID) as user and group names.
+* Supports per-account configuration.
 
 ## Limitations
 
@@ -164,15 +169,11 @@ Identity extension within the VM. The advantage of doing this is that the
 credentials are managed by the extension, and do not have to be put into
 core-site.xml.
 
-To use MSI, the following two steps are needed:
-1. Modify the VM deployment template to specify the port number of the token
- service exposed to localhost by the identity extension in the VM.
-2. Get your Azure ActiveDirectory Tenant ID:
-   1. Go to [the portal](https://portal.azure.com)
-   2. Under services in left nav, look for Azure Active Directory and click on it.
-   3. Click on Properties
-   4. Note down the GUID shown under "Directory ID" - this is your AAD tenant ID
-
+To use MSI, modify the VM deployment template to use the identity extension. Note the
+port number you specified in the template: this is the port number for the REST endpoint
+of the token service exposed to localhost by the identity extension in the VM. The default
+recommended port number is 50342 - if the recommended port number is used, then the msi.port
+setting below can be omitted in the configuration.
 
 ##### Configure core-site.xml
 Add the following properties to your `core-site.xml`
@@ -185,12 +186,7 @@ Add the following properties to your `core-site.xml`
 
 <property>
   <name>fs.adl.oauth2.msi.port</name>
-  <value>PORT NUMBER FROM STEP 1 ABOVE</value>
-</property>
-
-<property>
-  <name>fs.adl.oauth2.msi.TenantGuid</name>
-  <value>AAD TENANT ID GUID FROM STEP 2 ABOVE</value>
+  <value>PORT NUMBER FROM ABOVE (if different from the default of 50342)</value>
 </property>
 ```
 
@@ -333,6 +329,42 @@ Add the following properties to `core-site.xml`
   </description>
 </property>
 ```
+## Configurations for different ADL accounts
+Different ADL accounts can be accessed with different ADL client configurations.
+This also allows for different login details.
+
+1. All `fs.adl` options can be set on a per account basis.
+1. The account specific option is set by replacing the `fs.adl.` prefix on an option
+with `fs.adl.account.ACCOUNTNAME.`, where `ACCOUNTNAME` is the name of the account.
+1. When connecting to an account, all options explicitly set will override
+the base `fs.adl.` values.
+
+As an example, a configuration could have a base configuration to use the public account
+`adl://<some-public-account>.azuredatalakestore.net/` and an account-specific configuration
+to use some private account `adl://myprivateaccount.azuredatalakestore.net/`
+
+```xml
+<property>
+  <name>fs.adl.oauth2.client.id</name>
+  <value>CLIENTID</value>
+</property>
+
+<property>
+  <name>fs.adl.oauth2.credential</name>
+  <value>CREDENTIAL</value>
+</property>
+
+<property>
+  <name>fs.adl.account.myprivateaccount.oauth2.client.id</name>
+  <value>CLIENTID1</value>
+</property>
+
+<property>
+  <name>fs.adl.account.myprivateaccount.oauth2.credential</name>
+  <value>CREDENTIAL1</value>
+</property>
+```
+
 ## Testing the azure-datalake-store Module
 The `hadoop-azure` module includes a full suite of unit tests.
 Most of the tests will run without additional configuration by running `mvn test`.

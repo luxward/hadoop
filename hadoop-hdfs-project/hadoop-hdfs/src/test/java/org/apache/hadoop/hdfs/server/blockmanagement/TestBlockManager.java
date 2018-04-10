@@ -39,6 +39,8 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
+import org.apache.hadoop.hdfs.protocol.BlockType;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
@@ -114,10 +116,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class TestBlockManager {
   private DatanodeStorageInfo[] storages;
@@ -1030,8 +1035,7 @@ public class TestBlockManager {
         		0x1BAD5EED);
       }
       catch (RemoteException re) {
-    	  GenericTestUtils.assertExceptionContains("nodes instead of "
-    	  		+ "minReplication", re);
+        GenericTestUtils.assertExceptionContains("of the 1 minReplication", re);
       }
     }
     finally {
@@ -1319,8 +1323,9 @@ public class TestBlockManager {
       assertTrue("Unexpected text in metasave," +
               "was expecting corrupt blocks section!", foundIt);
       corruptBlocksLine = reader.readLine();
-      String regex = "Block=[0-9]+\\tNode=.*\\tStorageID=.*StorageState.*" +
-          "TotalReplicas=.*Reason=GENSTAMP_MISMATCH";
+      String regex = "Block=blk_[0-9]+_[0-9]+\\tSize=.*\\tNode=.*" +
+          "\\tStorageID=.*\\tStorageState.*" +
+          "\\tTotalReplicas=.*\\tReason=GENSTAMP_MISMATCH";
       assertTrue("Unexpected corrupt block section in metasave!",
           corruptBlocksLine.matches(regex));
       corruptBlocksLine = reader.readLine();
@@ -1343,14 +1348,14 @@ public class TestBlockManager {
     spyBM.createLocatedBlocks(new BlockInfo[]{blockInfo}, 3L, false, 0L, 3L,
         false, false, null, null);
     verify(spyBM, Mockito.atLeast(0)).
-        isReplicaCorrupt(Mockito.any(BlockInfo.class),
-            Mockito.any(DatanodeDescriptor.class));
+        isReplicaCorrupt(any(BlockInfo.class),
+            any(DatanodeDescriptor.class));
     addCorruptBlockOnNodes(0, origNodes);
     spyBM.createLocatedBlocks(new BlockInfo[]{blockInfo}, 3L, false, 0L, 3L,
         false, false, null, null);
     verify(spyBM, Mockito.atLeast(1)).
-        isReplicaCorrupt(Mockito.any(BlockInfo.class),
-            Mockito.any(DatanodeDescriptor.class));
+        isReplicaCorrupt(any(BlockInfo.class),
+            any(DatanodeDescriptor.class));
   }
 
   @Test (timeout = 300000)
@@ -1368,8 +1373,6 @@ public class TestBlockManager {
     Configuration conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     conf.setLong(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
-    conf.set(DFSConfigKeys.DFS_NAMENODE_EC_POLICIES_ENABLED_KEY,
-        StripedFileTestUtil.getDefaultECPolicy().getName());
     MiniDFSCluster cluster = null;
     try {
       cluster = new MiniDFSCluster.Builder(conf)
@@ -1382,6 +1385,8 @@ public class TestBlockManager {
       final Path ecDir = new Path("/ec");
       final Path testFileUnsatisfied = new Path(ecDir, "test1");
       final Path testFileSatisfied = new Path(ecDir, "test2");
+      dfs.enableErasureCodingPolicy(
+          StripedFileTestUtil.getDefaultECPolicy().getName());
       cluster.getFileSystem().getClient().mkdirs(ecDir.toString(), null, true);
       cluster.getFileSystem().getClient()
           .setErasureCodingPolicy(ecDir.toString(),
@@ -1506,10 +1511,157 @@ public class TestBlockManager {
         blockInfo.getGenerationStamp() + 1,
         blockInfo.getNumBytes(),
         new DatanodeStorageInfo[]{});
-    BlockCollection mockedBc = Mockito.mock(BlockCollection.class);
-    Mockito.when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
+    BlockCollection mockedBc = mock(BlockCollection.class);
+    when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
     bm.checkRedundancy(mockedBc);
     return blockInfo;
   }
 
+  private BlockInfo makeBlockReplicasMaintenance(long blockId,
+      List<DatanodeDescriptor> nodesList) throws IOException {
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+
+    BlockInfo blockInfo = blockOnNodes(blockId, nodesList);
+    blockInfo.setReplication((short) 3);
+    blockInfo.setBlockCollectionId(inodeId);
+
+    Mockito.doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    bm.blocksMap.addBlockCollection(blockInfo, bc);
+    nodesList.get(0).setInMaintenance();
+    BlockCollection mockedBc = mock(BlockCollection.class);
+    when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
+    bm.checkRedundancy(mockedBc);
+    return blockInfo;
+  }
+
+  @Test
+  public void testMetaSaveInMaintenanceReplicas() throws Exception {
+    List<DatanodeStorageInfo> origStorages = getStorages(0, 1);
+    List<DatanodeDescriptor> origNodes = getNodes(origStorages);
+    BlockInfo block = makeBlockReplicasMaintenance(0, origNodes);
+    File file = new File("test.log");
+    PrintWriter out = new PrintWriter(file);
+    bm.metaSave(out);
+    out.flush();
+    FileInputStream fstream = new FileInputStream(file);
+    DataInputStream in = new DataInputStream(fstream);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    StringBuffer buffer = new StringBuffer();
+    String line;
+    try {
+      while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+        System.out.println(line);
+      }
+      String output = buffer.toString();
+      assertTrue("Metasave output should not have reported " +
+              "missing blocks.",
+          output.contains("Metasave: Blocks currently missing: 0"));
+      assertTrue("There should be 1 block waiting for reconstruction",
+          output.contains("Metasave: Blocks waiting for reconstruction: 1"));
+      String blockNameGS = block.getBlockName() + "_" +
+          block.getGenerationStamp();
+      assertTrue("Block " + blockNameGS +
+              " should be list as maintenance.",
+          output.contains(blockNameGS + " (replicas: live: 1 decommissioning " +
+              "and decommissioned: 0 corrupt: 0 in excess: " +
+              "0 maintenance mode: 1)"));
+    } finally {
+      reader.close();
+      file.delete();
+    }
+  }
+
+  private BlockInfo makeBlockReplicasDecommission(long blockId,
+      List<DatanodeDescriptor> nodesList) throws IOException {
+    long inodeId = ++mockINodeId;
+    final INodeFile bc = TestINodeFile.createINodeFile(inodeId);
+
+    BlockInfo blockInfo = blockOnNodes(blockId, nodesList);
+    blockInfo.setReplication((short) 3);
+    blockInfo.setBlockCollectionId(inodeId);
+
+    Mockito.doReturn(bc).when(fsn).getBlockCollection(inodeId);
+    bm.blocksMap.addBlockCollection(blockInfo, bc);
+    nodesList.get(0).startDecommission();
+    BlockCollection mockedBc = mock(BlockCollection.class);
+    when(mockedBc.getBlocks()).thenReturn(new BlockInfo[]{blockInfo});
+    bm.checkRedundancy(mockedBc);
+    return blockInfo;
+  }
+
+  @Test
+  public void testMetaSaveDecommissioningReplicas() throws Exception {
+    List<DatanodeStorageInfo> origStorages = getStorages(0, 1);
+    List<DatanodeDescriptor> origNodes = getNodes(origStorages);
+    BlockInfo block = makeBlockReplicasDecommission(0, origNodes);
+    File file = new File("test.log");
+    PrintWriter out = new PrintWriter(file);
+    bm.metaSave(out);
+    out.flush();
+    FileInputStream fstream = new FileInputStream(file);
+    DataInputStream in = new DataInputStream(fstream);
+    BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+    StringBuffer buffer = new StringBuffer();
+    String line;
+    try {
+      while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+      }
+      String output = buffer.toString();
+      assertTrue("Metasave output should not have reported " +
+              "missing blocks.",
+          output.contains("Metasave: Blocks currently missing: 0"));
+      assertTrue("There should be 1 block waiting for reconstruction",
+          output.contains("Metasave: Blocks waiting for reconstruction: 1"));
+      String blockNameGS = block.getBlockName() + "_" +
+          block.getGenerationStamp();
+      assertTrue("Block " + blockNameGS +
+              " should be list as maintenance.",
+          output.contains(blockNameGS + " (replicas: live: 1 decommissioning " +
+              "and decommissioned: 1 corrupt: 0 in excess: " +
+              "0 maintenance mode: 0)"));
+    } finally {
+      reader.close();
+      file.delete();
+    }
+  }
+
+  @Test
+  public void testLegacyBlockInInvalidateBlocks() {
+    final long legancyGenerationStampLimit = 10000;
+    BlockIdManager bim = Mockito.mock(BlockIdManager.class);
+
+    when(bim.getLegacyGenerationStampLimit())
+        .thenReturn(legancyGenerationStampLimit);
+    when(bim.isStripedBlock(any(Block.class))).thenCallRealMethod();
+    when(bim.isLegacyBlock(any(Block.class))).thenCallRealMethod();
+
+    InvalidateBlocks ibs = new InvalidateBlocks(100, 30000, bim);
+
+    Block legacy = new Block(-1, 10, legancyGenerationStampLimit / 10);
+    Block striped = new Block(
+        bm.nextBlockId(BlockType.STRIPED), 10,
+        legancyGenerationStampLimit + 10);
+
+    DatanodeInfo legacyDnInfo = DFSTestUtil.getLocalDatanodeInfo();
+    DatanodeInfo stripedDnInfo = DFSTestUtil.getLocalDatanodeInfo();
+
+    ibs.add(legacy, legacyDnInfo, false);
+    assertEquals(1, ibs.getBlocks());
+    assertEquals(0, ibs.getECBlocks());
+
+    ibs.add(striped, stripedDnInfo, false);
+    assertEquals(1, ibs.getBlocks());
+    assertEquals(1, ibs.getECBlocks());
+
+    ibs.remove(legacyDnInfo);
+    assertEquals(0, ibs.getBlocks());
+    assertEquals(1, ibs.getECBlocks());
+
+    ibs.remove(stripedDnInfo);
+    assertEquals(0, ibs.getBlocks());
+    assertEquals(0, ibs.getECBlocks());
+  }
 }

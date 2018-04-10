@@ -17,9 +17,6 @@
  */
 package org.apache.hadoop.http;
 
-import static org.apache.hadoop.fs.CommonConfigurationKeys.DEFAULT_HADOOP_HTTP_STATIC_USER;
-import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_HTTP_STATIC_USER;
-
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -27,6 +24,7 @@ import java.io.InterruptedIOException;
 import java.io.PrintStream;
 import java.net.BindException;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.util.ArrayList;
@@ -133,9 +131,17 @@ public final class HttpServer2 implements FilterContainer {
       "hadoop.http.socket.backlog.size";
   public static final int HTTP_SOCKET_BACKLOG_SIZE_DEFAULT = 128;
   public static final String HTTP_MAX_THREADS_KEY = "hadoop.http.max.threads";
+  public static final String HTTP_ACCEPTOR_COUNT_KEY =
+      "hadoop.http.acceptor.count";
+  // -1 to use default behavior of setting count based on CPU core count
+  public static final int HTTP_ACCEPTOR_COUNT_DEFAULT = -1;
+  public static final String HTTP_SELECTOR_COUNT_KEY =
+      "hadoop.http.selector.count";
+  // -1 to use default behavior of setting count based on CPU core count
+  public static final int HTTP_SELECTOR_COUNT_DEFAULT = -1;
   public static final String HTTP_TEMP_DIR_KEY = "hadoop.http.temp.dir";
 
-  static final String FILTER_INITIALIZER_PROPERTY
+  public static final String FILTER_INITIALIZER_PROPERTY
       = "hadoop.http.filter.initializers";
 
   // The ServletContext attribute where the daemon Configuration
@@ -464,7 +470,9 @@ public final class HttpServer2 implements FilterContainer {
 
     private ServerConnector createHttpChannelConnector(
         Server server, HttpConfiguration httpConfig) {
-      ServerConnector conn = new ServerConnector(server);
+      ServerConnector conn = new ServerConnector(server,
+          conf.getInt(HTTP_ACCEPTOR_COUNT_KEY, HTTP_ACCEPTOR_COUNT_DEFAULT),
+          conf.getInt(HTTP_SELECTOR_COUNT_KEY, HTTP_SELECTOR_COUNT_DEFAULT));
       ConnectionFactory connFactory = new HttpConnectionFactory(httpConfig);
       conn.addConnectionFactory(connFactory);
       configureChannelConnector(conn);
@@ -864,6 +872,45 @@ public final class HttpServer2 implements FilterContainer {
   }
 
   /**
+   * Add an internal servlet in the server, with initialization parameters.
+   * Note: This method is to be used for adding servlets that facilitate
+   * internal communication and not for user facing functionality. For
+   * servlets added using this method, filters (except internal Kerberos
+   * filters) are not enabled.
+   *
+   * @param name The name of the servlet (can be passed as null)
+   * @param pathSpec The path spec for the servlet
+   * @param clazz The servlet class
+   * @param params init parameters
+   */
+  public void addInternalServlet(String name, String pathSpec,
+      Class<? extends HttpServlet> clazz, Map<String, String> params) {
+    // Jetty doesn't like the same path spec mapping to different servlets, so
+    // if there's already a mapping for this pathSpec, remove it and assume that
+    // the newest one is the one we want
+    final ServletHolder sh = new ServletHolder(clazz);
+    sh.setName(name);
+    sh.setInitParameters(params);
+    final ServletMapping[] servletMappings =
+        webAppContext.getServletHandler().getServletMappings();
+    for (int i = 0; i < servletMappings.length; i++) {
+      if (servletMappings[i].containsPathSpec(pathSpec)) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Found existing " + servletMappings[i].getServletName() +
+              " servlet at path " + pathSpec + "; will replace mapping" +
+              " with " + sh.getName() + " servlet");
+        }
+        ServletMapping[] newServletMappings =
+            ArrayUtil.removeFromArray(servletMappings, servletMappings[i]);
+        webAppContext.getServletHandler()
+            .setServletMappings(newServletMappings);
+        break;
+      }
+    }
+    webAppContext.addServlet(sh, pathSpec);
+  }
+
+  /**
    * Add the given handler to the front of the list of handlers.
    *
    * @param handler The handler to add
@@ -993,14 +1040,31 @@ public final class HttpServer2 implements FilterContainer {
    * Get the pathname to the webapps files.
    * @param appName eg "secondary" or "datanode"
    * @return the pathname as a URL
-   * @throws FileNotFoundException if 'webapps' directory cannot be found on CLASSPATH.
+   * @throws FileNotFoundException if 'webapps' directory cannot be found
+   *   on CLASSPATH or in the development location.
    */
   protected String getWebAppsPath(String appName) throws FileNotFoundException {
-    URL url = getClass().getClassLoader().getResource("webapps/" + appName);
-    if (url == null)
-      throw new FileNotFoundException("webapps/" + appName
-          + " not found in CLASSPATH");
-    String urlString = url.toString();
+    URL resourceUrl = null;
+    File webResourceDevLocation = new File("src/main/webapps", appName);
+    if (webResourceDevLocation.exists()) {
+      LOG.info("Web server is in development mode. Resources "
+          + "will be read from the source tree.");
+      try {
+        resourceUrl = webResourceDevLocation.getParentFile().toURI().toURL();
+      } catch (MalformedURLException e) {
+        throw new FileNotFoundException("Mailformed URL while finding the "
+            + "web resource dir:" + e.getMessage());
+      }
+    } else {
+      resourceUrl =
+          getClass().getClassLoader().getResource("webapps/" + appName);
+
+      if (resourceUrl == null) {
+        throw new FileNotFoundException("webapps/" + appName +
+            " not found in CLASSPATH");
+      }
+    }
+    String urlString = resourceUrl.toString();
     return urlString.substring(0, urlString.lastIndexOf('/'));
   }
 
@@ -1200,6 +1264,7 @@ public final class HttpServer2 implements FilterContainer {
    * @throws Exception
    */
   void openListeners() throws Exception {
+    LOG.debug("opening listeners: {}", listeners);
     for (ServerConnector listener : listeners) {
       if (listener.getLocalPort() != -1 && listener.getLocalPort() != -2) {
         // This listener is either started externally or has been bound or was
@@ -1288,24 +1353,6 @@ public final class HttpServer2 implements FilterContainer {
       sb.append(l.getHost()).append(":").append(l.getPort()).append("/,");
     }
     return sb.toString();
-  }
-
-  /**
-   * check whether user is static and unauthenticated, if the
-   * answer is TRUE, that means http sever is in non-security
-   * environment.
-   * @param servletContext the servlet context.
-   * @param request the servlet request.
-   * @return TRUE/FALSE based on the logic described above.
-   */
-  public static boolean isStaticUserAndNoneAuthType(
-      ServletContext servletContext, HttpServletRequest request) {
-    Configuration conf =
-        (Configuration) servletContext.getAttribute(CONF_CONTEXT_ATTRIBUTE);
-    final String authType = request.getAuthType();
-    final String staticUser = conf.get(HADOOP_HTTP_STATIC_USER,
-        DEFAULT_HADOOP_HTTP_STATIC_USER);
-    return authType == null && staticUser.equals(request.getRemoteUser());
   }
 
   /**
@@ -1405,14 +1452,9 @@ public final class HttpServer2 implements FilterContainer {
 
     @Override
     public void doGet(HttpServletRequest request, HttpServletResponse response)
-        throws ServletException, IOException {
-      // If user is a static user and auth Type is null, that means
-      // there is a non-security environment and no need authorization,
-      // otherwise, do the authorization.
-      final ServletContext servletContext = getServletContext();
-      if (!HttpServer2.isStaticUserAndNoneAuthType(servletContext, request) &&
-          !HttpServer2.isInstrumentationAccessAllowed(servletContext,
-              request, response)) {
+      throws ServletException, IOException {
+      if (!HttpServer2.isInstrumentationAccessAllowed(getServletContext(),
+                                                      request, response)) {
         return;
       }
       response.setContentType("text/plain; charset=UTF-8");
